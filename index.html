@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>Drop & Match — prototipo</title>
+<style>
+  :root{--bg:#0e0f12;--panel:#0b0c0e;--muted:#999;--accent:#ffd166}
+  html,body{height:100%;margin:0;background:var(--bg);color:#eee;font-family:system-ui,Segoe UI,Roboto,Arial}
+  #wrap{display:flex;flex-direction:column;align-items:center;padding:10px;gap:8px}
+  #game{display:flex;gap:12px;align-items:start}
+  canvas{background:#071018;border-radius:8px;touch-action:none}
+  .side{width:160px;min-width:120px;color:var(--muted);font-size:14px}
+  .big{font-size:20px;color:#fff;margin-bottom:6px}
+  .btns{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+  button.control{background:#111;border:1px solid #222;color:#fff;padding:10px;border-radius:10px;min-width:54px}
+  .hud{display:flex;flex-direction:column;gap:6px}
+  .footer{width:100%;max-width:980px;display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:13px}
+  .touchbar{display:flex;gap:10px;justify-content:center;align-items:center;margin-top:6px}
+  .touch{background:#0c1115;border-radius:10px;padding:10px 14px;border:1px solid #152025;color:#fff;user-select:none}
+  .hint{font-size:12px;color:#8b98a6}
+  @media(max-width:760px){
+    #game{flex-direction:column;align-items:center}
+    .side{width:100%}
+    canvas{width:92vw;height:auto}
+    .btns{justify-content:center}
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div style="display:flex;align-items:center;gap:10px">
+    <h1 style="margin:0;font-size:18px">Drop & Match</h1>
+    <div class="hint">Táctil: toca botones o desliza. ¡Combos por colores!</div>
+  </div>
+
+  <div id="game">
+    <canvas id="c"></canvas>
+
+    <div class="side">
+      <div class="big">Puntuación <div id="score" style="float:right">0</div></div>
+      <div>Nivel <span id="level">1</span></div>
+      <div>Líneas <span id="lines">0</span></div>
+      <div>Combo <span id="combo">0</span></div>
+
+      <div style="margin-top:12px">
+        <div style="color:#ddd;margin-bottom:6px">Siguiente</div>
+        <canvas id="next" width="80" height="80" style="background:#071018;border-radius:6px"></canvas>
+      </div>
+
+      <div class="btns">
+        <button class="control" id="btn-left">◀</button>
+        <button class="control" id="btn-rot">⟳</button>
+        <button class="control" id="btn-right">▶</button>
+        <button class="control" id="btn-down">▼</button>
+        <button class="control" id="btn-drop">⤓</button>
+      </div>
+
+      <div style="margin-top:10px">
+        <button class="control" id="btn-pause">Pausa</button>
+        <button class="control" id="btn-reset">Reiniciar</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="touchbar" id="touchbar">
+    <div class="touch" id="t-left">◀</div>
+    <div class="touch" id="t-rot">⟳</div>
+    <div class="touch" id="t-right">▶</div>
+    <div class="touch" id="t-down">▼</div>
+    <div class="touch" id="t-drop">⤓</div>
+  </div>
+
+  <div class="footer">
+    <div>Prototipo — guardá el archivo y abrilo en el navegador</div>
+    <div style="color:var(--muted)">Hecho ligero • Juego rápido</div>
+  </div>
+</div>
+
+<script>
+/* Drop & Match
+ - Grilla 10x18 por defecto (ajustable).
+ - Piezas tetromino-ish, cada bloque tiene color.
+ - Explosión si se conecta >=4 bloques ortogonales del mismo color
+ - o si se llena fila completa (como en Tetris).
+ - Toques y gestos mobile: botones y swipe lateral (izq/der) y swipe abajo (soft drop).
+ - Un solo archivo, sin recursos externos.
+*/
+
+(() => {
+  // --- config
+  const COLS = 10, ROWS = 18;
+  const COLORS = ["#39a0ed","#ffd166","#6be4a4","#ff6b6b","#b388ff","#ffd6a5"];
+  let BLOCK = 28; // px base (se ajusta)
+  const DROP_INTERVAL_BASE = 700; // ms
+  // --- canvas setup responsive
+  const c = document.getElementById("c");
+  const ctx = c.getContext("2d");
+  const nextCanvas = document.getElementById("next");
+  const nctx = nextCanvas.getContext("2d");
+
+  function resize() {
+    const maxW = Math.min(window.innerWidth - 220, 520);
+    const width = Math.max(240, maxW);
+    BLOCK = Math.floor(width / COLS);
+    c.width = BLOCK * COLS;
+    c.height = BLOCK * ROWS;
+    c.style.width = c.width + "px";
+    c.style.height = c.height + "px";
+    drawAll();
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // --- utilities
+  function rnd(a,b){ return Math.floor(Math.random()*(b-a+1))+a }
+  function randColor(){ return COLORS[rnd(0,COLORS.length-1)] }
+
+  // --- shapes (small variants, defined as arrays of coordinates)
+  const SHAPES = [
+    [[0,0],[1,0],[0,1],[1,1]], // O
+    [[0,0],[1,0],[2,0],[3,0]], // I
+    [[0,0],[1,0],[2,0],[2,1]], // L
+    [[0,1],[1,1],[2,1],[2,0]], // J-like
+    [[0,1],[1,0],[1,1],[2,0]], // S-ish
+    [[0,0],[1,0],[1,1],[2,1]], // Z-ish
+    [[1,0],[0,1],[1,1],[2,1]], // T
+  ];
+
+  // rotate coords around center (approx)
+  function rotateCoords(coords){
+    // center about (1,1)
+    return coords.map(([x,y])=>{
+      const nx = y;
+      const ny = 3 - x; // small rotation trick for 4x4 grid-ish
+      return [nx-1, ny-1];
+    }).map(([x,y])=>[x+1,y+1]); // shift back (works okay for these small shapes)
+  }
+
+  // --- game state
+  let grid = Array.from({length:ROWS},()=>Array.from({length:COLS},()=>null));
+  let score = 0, level = 1, lines = 0, combo = 0;
+  const scoreEl = document.getElementById("score");
+  const levelEl = document.getElementById("level");
+  const linesEl = document.getElementById("lines");
+  const comboEl = document.getElementById("combo");
+
+  function updateHUD(){ scoreEl.textContent=score; levelEl.textContent=level; linesEl.textContent=lines; comboEl.textContent=combo }
+
+  // piece object
+  function makePiece(){
+    const id = rnd(0,SHAPES.length-1);
+    const base = SHAPES[id];
+    const color = randColor();
+    const cells = base.map(([x,y])=>({x,y}));
+    return {id, cells, color, x: Math.floor(COLS/2)-1, y:-1};
+  }
+
+  let cur = makePiece();
+  let next = makePiece();
+  let dropTimer = 0;
+  let lastTime = performance.now();
+  let paused = false;
+  let gameOver = false;
+
+  // --- collision & placement
+  function valid(piece, dx=0, dy=0, testCells=null){
+    const cells = testCells || piece.cells;
+    for(const p of cells){
+      const x = piece.x + p.x + dx;
+      const y = piece.y + p.y + dy;
+      if(x<0 || x>=COLS) return false;
+      if(y>=ROWS) return false;
+      if(y>=0 && grid[y][x]) return false;
+    }
+    return true;
+  }
+
+  function lockPiece(){
+    for(const p of cur.cells){
+      const x = cur.x + p.x, y = cur.y + p.y;
+      if(y>=0 && y<ROWS && x>=0 && x<COLS) grid[y][x] = cur.color;
+      if(y<0) { gameOver=true; }
+    }
+    // after lock, try clear: rows + color groups
+    let removedRows = clearFullRows();
+    let removedChains = clearColorChains();
+    if(removedRows>0 || removedChains>0){
+      combo = removedChains>0 ? combo+1 : 0;
+      score += (removedRows*100 + removedChains*60) * level * (1 + combo*0.2);
+      lines += removedRows;
+      level = 1 + Math.floor(lines/8);
+    } else {
+      combo = 0;
+    }
+    cur = next; next = makePiece();
+  }
+
+  function clearFullRows(){
+    let removed = 0;
+    for(let y=ROWS-1;y>=0;y--){
+      if(grid[y].every(cell=>cell!==null)){
+        // remove row y
+        grid.splice(y,1);
+        grid.unshift(Array.from({length:COLS},()=>null));
+        removed++;
+        y++; // re-check same index after shift
+      }
+    }
+    return removed;
+  }
+
+  // find orthogonally connected groups of same color >=4 and remove them
+  function clearColorChains(){
+    const visited = Array.from({length:ROWS},()=>Array.from({length:COLS},()=>false));
+    let removedGroups = 0;
+    for(let y=0;y<ROWS;y++){
+      for(let x=0;x<COLS;x++){
+        if(grid[y][x] && !visited[y][x]){
+          const color = grid[y][x];
+          const stack = [[x,y]];
+          const group = [];
+          visited[y][x]=true;
+          while(stack.length){
+            const [cx,cy] = stack.pop();
+            group.push([cx,cy]);
+            const neigh = [[1,0],[-1,0],[0,1],[0,-1]];
+            for(const [dx,dy] of neigh){
+              const nx=cx+dx, ny=cy+dy;
+              if(nx>=0 && nx<COLS && ny>=0 && ny<ROWS && !visited[ny][nx] && grid[ny][nx]===color){
+                visited[ny][nx]=true; stack.push([nx,ny]);
+              }
+            }
+          }
+          if(group.length>=4){
+            removedGroups += group.length;
+            for(const [gx,gy] of group) grid[gy][gx]=null;
+            // let blocks above fall down: simple gravity
+            for(let col of new Set(group.map(g=>g[0]))){
+              for(let yy=ROWS-1;yy>=0;yy--){
+                if(!grid[yy][col]){
+                  // find above non-null
+                  let above = yy-1;
+                  while(above>=0 && !grid[above][col]) above--;
+                  if(above>=0){
+                    grid[yy][col]=grid[above][col];
+                    grid[above][col]=null;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    return removedGroups;
+  }
+
+  // rotation: basic rotate around center: map coords
+  function rotatePiece(p){
+    // create rotated version (90deg)
+    const rotated = p.cells.map(pt=>{
+      // trasladar al centro 1.5,1.5 -> rotar -> trasladar hacia atrás
+      const cx = 1.5, cy = 1.5;
+      const rx = Math.round(cx + (pt.y - cy));
+      const ry = Math.round(cy - (pt.x - cx));
+      return {x: rx, y: ry};
+    });
+    // normalizar de modo que min x,y >=0
+    const minx = Math.min(...rotated.map(v=>v.x));
+    const miny = Math.min(...rotated.map(v=>v.y));
+    const norm = rotated.map(v=>({x:v.x-minx, y:v.y-miny}));
+    if(valid(p,0,0,norm)) p.cells = norm;
+    else {
+      //// intenta patear a la izquierda/derecha
+      if(valid(p,-1,0,norm)){ p.x-=1; p.cells = norm; }
+      else if(valid(p,1,0,norm)){ p.x+=1; p.cells = norm; }
+    }
+  }
+
+  // drop hard
+  function hardDrop(){
+    while(valid(cur,0,1)) cur.y++;
+    lockPiece();
+  }
+
+  // --- drawing
+  function drawCell(x,y,color,ctxLocal){
+    ctxLocal.fillStyle = color || "#0b1220";
+    ctxLocal.fillRect(x*BLOCK, y*BLOCK, BLOCK-1, BLOCK-1);
+    // highlight
+    ctxLocal.fillStyle = "rgba(255,255,255,0.06)";
+    ctxLocal.fillRect(x*BLOCK+2, y*BLOCK+2, BLOCK-4, BLOCK-4);
+  }
+
+  function drawAll(){
+    // clear
+    ctx.clearRect(0,0,c.width,c.height);
+    // grid background
+    ctx.fillStyle = "#071018";
+    ctx.fillRect(0,0,c.width,c.height);
+    // draw grid cells
+    for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++) if(grid[y][x]) drawCell(x,y,grid[y][x],ctx);
+    // draw ghost (where piece would land)
+    const ghost = {...cur, cells: cur.cells.map(p=>({x:p.x,y:p.y}))};
+    while(valid(ghost,0,1)) ghost.y++;
+    for(const p of ghost.cells){
+      const gx = ghost.x+p.x, gy = ghost.y+p.y;
+      if(gy>=0) {
+        ctx.fillStyle = "rgba(255,255,255,0.06)";
+        ctx.fillRect(gx*BLOCK, gy*BLOCK, BLOCK-1, BLOCK-1);
+      }
+    }
+    // draw current piece
+    for(const p of cur.cells){
+      const x = cur.x + p.x, y = cur.y + p.y;
+      if(y>=0) drawCell(x,y,cur.color,ctx);
+    }
+    // grid lines subtle
+    ctx.strokeStyle = "rgba(255,255,255,0.03)";
+    ctx.lineWidth = 1;
+    for(let i=0;i<=COLS;i++){ ctx.beginPath(); ctx.moveTo(i*BLOCK,0); ctx.lineTo(i*BLOCK,c.height); ctx.stroke(); }
+    for(let i=0;i<=ROWS;i++){ ctx.beginPath(); ctx.moveTo(0,i*BLOCK); ctx.lineTo(c.width,i*BLOCK); ctx.stroke(); }
+
+    // draw next
+    nctx.clearRect(0,0,nextCanvas.width,nextCanvas.height);
+    const s = 18;
+    nctx.translate(0,0);
+    const scale = Math.min(60/ (4*s), 1);
+    // draw a small preview using next.cells
+    const cw = nextCanvas.width, ch = nextCanvas.height;
+    nctx.fillStyle="#071018"; nctx.fillRect(0,0,cw,ch);
+    const offsetX = Math.floor((cw - 4* (BLOCK/3))/2);
+    const offsetY = Math.floor((ch - 4* (BLOCK/3))/2);
+    for(const p of next.cells){
+      nctx.fillStyle = next.color;
+      const rx = offsetX + p.x * (BLOCK/3);
+      const ry = offsetY + p.y * (BLOCK/3);
+      nctx.fillRect(rx, ry, Math.max(8, BLOCK/3-2), Math.max(8, BLOCK/3-2));
+    }
+  }
+
+  // --- input (keyboard + touch + swipe)
+  const keys = {};
+  window.addEventListener("keydown", e=>{
+    if(e.key==="ArrowLeft") moveLeft();
+    if(e.key==="ArrowRight") moveRight();
+    if(e.key==="ArrowDown") softDrop();
+    if(e.key===" ") { e.preventDefault(); hardDrop(); }
+    if(e.key==="ArrowUp" || e.key.toLowerCase()==="z") rotatePiece(cur);
+    if(e.key.toLowerCase()==="p") paused = !paused;
+    if(e.key.toLowerCase()==="r") resetGame();
+  });
+
+  document.getElementById("btn-left").onclick = moveLeft;
+  document.getElementById("btn-right").onclick = moveRight;
+  document.getElementById("btn-rot").onclick = ()=>rotatePiece(cur);
+  document.getElementById("btn-down").onclick = softDrop;
+  document.getElementById("btn-drop").onclick = hardDrop;
+  document.getElementById("btn-pause").onclick = ()=>{ paused = !paused; };
+  document.getElementById("btn-reset").onclick = resetGame;
+
+  // touchbar shortcuts
+  document.getElementById("t-left").ontouchstart = (e)=>{e.preventDefault(); moveLeft();};
+  document.getElementById("t-right").ontouchstart = (e)=>{e.preventDefault(); moveRight();};
+  document.getElementById("t-rot").ontouchstart = (e)=>{e.preventDefault(); rotatePiece(cur);};
+  document.getElementById("t-down").ontouchstart = (e)=>{e.preventDefault(); softDrop();};
+  document.getElementById("t-drop").ontouchstart = (e)=>{e.preventDefault(); hardDrop();};
+
+  // Detección de deslizamiento del lienzo para dispositivos móviles: horizontal izquierda/derecha = mover; abajo = soltar suavemente; tocar = rotar
+  let touchStart = null;
+  c.addEventListener("pointerdown", e=>{ c.setPointerCapture(e.pointerId); touchStart={x:e.clientX,y:e.clientY,t:Date.now()}; });
+  c.addEventListener("pointerup", e=>{
+    if(!touchStart) return;
+    const dx = e.clientX - touchStart.x, dy = e.clientY - touchStart.y;
+    const dt = Date.now() - touchStart.t;
+    const adx = Math.abs(dx), ady = Math.abs(dy);
+    if(adx<8 && ady<8 && dt<400){
+      rotatePiece(cur);
+    } else if(adx>Math.abs(ady) && adx>20){
+      if(dx>0) moveRight(); else moveLeft();
+    } else if(ady>20 && dy>0){
+      softDrop();
+    }
+    touchStart=null;
+  });
+
+  // --- movements
+  function moveLeft(){ if(valid(cur,-1,0)) cur.x--; }
+  function moveRight(){ if(valid(cur,1,0)) cur.x++; }
+  function softDrop(){ if(valid(cur,0,1)) cur.y++; else { lockPiece(); } }
+
+  // --- game loop
+  function step(now){
+    const dt = now - lastTime;
+    lastTime = now;
+    if(!paused && !gameOver){
+      dropTimer += dt;
+      const interval = Math.max(140, DROP_INTERVAL_BASE - (level-1)*60);
+      if(dropTimer > interval){
+        dropTimer = 0;
+        if(valid(cur,0,1)) cur.y++;
+        else lockPiece();
+      }
+    }
+    drawAll();
+    updateHUD();
+    if(gameOver){
+      // draw overlay
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillRect(0,0,c.width,c.height);
+      ctx.fillStyle = "#fff";
+      ctx.font = "28px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText("AL PISTE PERDISTE", c.width/2, c.height/2 - 8);
+      ctx.font = "14px system-ui";
+      ctx.fillText("Pulsa Reiniciar para jugar otra vez", c.width/2, c.height/2 + 18);
+    }
+    requestAnimationFrame(step);
+  }
+
+  function resetGame(){
+    grid = Array.from({length:ROWS},()=>Array.from({length:COLS},()=>null));
+    cur = makePiece(); next = makePiece();
+    score = 0; level = 1; lines = 0; combo = 0; gameOver=false; paused=false;
+  }
+
+  // init
+  resetGame();
+  requestAnimationFrame(step);
+
+  // small tip: let user resize canvas initially
+  drawAll();
+})();
+</script>
+</body>
+</html>
